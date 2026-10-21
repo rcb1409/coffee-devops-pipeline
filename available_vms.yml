@@ -1,0 +1,15 @@
+---
+vms:
+  - name: loadbalancer
+    host: 152.7.177.202
+    user: rbollep
+    
+  - name: blue
+    host: 152.7.177.225
+    user: rbollep
+    port: 3000
+    
+  - name: green
+    host: 152.7.178.10
+    user: rbollep
+    port: 3001

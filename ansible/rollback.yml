@@ -1,0 +1,132 @@
+---
+# Rollback Playbook - Restore Previous Environment State
+
+- name: Read Rollback State and Switch
+  hosts: loadbalancer
+  gather_facts: false
+  become: true
+  
+  tasks:
+    - name: Check if rollback state file exists
+      stat:
+        path: "{{ rollback_state_file }}"
+      register: rollback_file
+      become: false
+    
+    - name: Read rollback state
+      slurp:
+        path: "{{ rollback_state_file }}"
+      register: rollback_state_raw
+      when: rollback_file.stat.exists
+      become: false
+    
+    - name: Set rollback environment
+      set_fact:
+        rollback_env: "{{ (rollback_state_raw.content | b64decode | trim) if rollback_file.stat.exists else 'none' }}"
+    
+    - name: Fail if no rollback state found
+      fail:
+        msg: "No rollback state found. Cannot perform rollback."
+      when: rollback_env == 'none' or not rollback_file.stat.exists
+    
+    - name: Display rollback plan
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🔄 ROLLBACK INITIATED"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Rolling back to: {{ rollback_env | upper }}"
+          - "Rollback VM: {{ hostvars[rollback_env]['ansible_host'] }}"
+          - "Rollback Port: {{ hostvars[rollback_env]['app_port'] }}"
+    
+    - name: Verify rollback environment health before switching
+      uri:
+        url: "http://{{ hostvars[rollback_env]['ansible_host'] }}:{{ hostvars[rollback_env]['app_port'] }}/health"
+        status_code: 200
+        timeout: 10
+      register: rollback_health_check
+      retries: 5
+      delay: 2
+      until: rollback_health_check.status == 200
+      delegate_to: localhost
+      become: false
+    
+    - name: Display rollback environment status
+      debug:
+        msg:
+          - "✅ {{ rollback_env | upper }} environment is healthy"
+          - "🏥 Health check passed"
+    
+    - name: Create Nginx upstream configuration for rollback
+      copy:
+        dest: /etc/nginx/conf.d/upstream.conf
+        content: |
+          upstream coffee_backend {
+              server {{ hostvars[rollback_env]['ansible_host'] }}:{{ hostvars[rollback_env]['app_port'] }};
+          }
+      register: upstream_config
+    
+    - name: Create Nginx site configuration for rollback
+      copy:
+        dest: /etc/nginx/sites-available/coffee-app
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name _;
+
+              add_header X-Active-Environment "{{ rollback_env }}" always;
+
+              location / {
+                  proxy_pass http://coffee_backend;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              }
+
+              location /health {
+                  proxy_pass http://coffee_backend/health;
+              }
+
+              location /status {
+                  add_header Content-Type text/plain;
+                  return 200 "Active Environment: {{ rollback_env }}\nBackend: {{ hostvars[rollback_env]['ansible_host'] }}:{{ hostvars[rollback_env]['app_port'] }}\n";
+              }
+          }
+      register: site_config
+    
+    - name: Test Nginx configuration
+      shell: nginx -t
+      changed_when: false
+    
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded
+    
+    - name: Ensure Nginx is started
+      systemd:
+        name: nginx
+        state: started
+    
+    - name: Test load balancer after rollback
+      uri:
+        url: "http://localhost/health"
+        status_code: 200
+      retries: 3
+      delay: 2
+    
+    - name: Update active environment marker to rollback environment
+      copy:
+        content: "{{ rollback_env }}"
+        dest: "{{ active_env_file }}"
+      become: false
+    
+    - name: Display rollback summary
+      debug:
+        msg:
+          - ""
+          - "✨ Rollback Complete!"
+          - "🟢 Active: {{ rollback_env | upper }}"
+          - "🌐 Load Balancer: http://{{ ansible_host }}/"
+          - "✅ System restored to previous state"

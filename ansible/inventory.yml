@@ -1,0 +1,40 @@
+all:
+  children:
+    loadbalancer:
+      hosts:
+        lb:
+          ansible_host: 152.7.177.63
+          ansible_user: skovvur
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    
+    app_servers:
+      hosts:
+        blue:
+          ansible_host: 152.7.177.21
+          ansible_user: skovvur
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+          environment_name: blue
+          app_port: 3000
+        
+        green:
+          ansible_host: 152.7.177.84
+          ansible_user: skovvur
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+          environment_name: green
+          app_port: 3000
+  
+  vars:
+    # Docker image settings
+    docker_image: "sanjaey/coffee"
+    docker_tag: "latest"
+    
+    # Application settings
+    app_container_name: "coffee-app"
+    app_internal_port: 3000
+    
+    # Nginx settings
+    nginx_port: 80
+    
+    # Deployment settings
+    active_env_file: "/home/skovvur/active-env.txt"
+    rollback_state_file: "/home/skovvur/rollback-state.txt"

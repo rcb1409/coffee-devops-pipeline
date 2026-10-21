@@ -1,0 +1,56 @@
+# Dependencies
+node_modules
+npm-debug.log
+package-lock.json
+
+# Testing
+test
+*.test.js
+coverage
+.nyc_output
+
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+README.md
+DEPLOYMENT.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.map
+dist
+build
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Misc
+.dockerignore
+Dockerfile
+docker-compose.yml

@@ -1,0 +1,99 @@
+# Alertmanager Configuration for Coffee Delivery Service
+
+global:
+  resolve_timeout: 5m
+  # Configure SMTP for email notifications (update with your SMTP server)
+  # smtp_smarthost: 'smtp.gmail.com:587'
+  # smtp_from: 'alerts@coffee-pipeline.com'
+  # smtp_auth_username: 'your-email@gmail.com'
+  # smtp_auth_password: 'your-password'
+
+# Templates for alert notifications
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Route tree for alerts
+route:
+  receiver: 'default-receiver'
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  
+  routes:
+    # Critical alerts go to critical receiver
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      continue: true
+    
+    # Deployment alerts
+    - match:
+        component: deployment
+      receiver: 'deployment-receiver'
+    
+    # Performance alerts
+    - match:
+        component: performance
+      receiver: 'performance-receiver'
+
+# Inhibition rules (suppress alerts when others are firing)
+inhibit_rules:
+  # Suppress warning alerts when critical alerts are firing
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']
+
+# Receivers
+receivers:
+  - name: 'default-receiver'
+    # Email notifications (uncomment and configure)
+    # email_configs:
+    #   - to: 'team@coffee-pipeline.com'
+    #     subject: '{{ .GroupLabels.alertname }} - Coffee Pipeline Alert'
+    #     html: '{{ range .Alerts }}{{ .Annotations.description }}<br>{{ end }}'
+    #     send_resolved: true
+    
+    # Webhook for GitHub Actions or other integrations
+    webhook_configs:
+      - url: 'http://localhost:9094/webhook'  # Custom webhook endpoint
+        send_resolved: true
+
+  - name: 'critical-receiver'
+    # Email for critical alerts
+    # email_configs:
+    #   - to: 'oncall@coffee-pipeline.com'
+    #     subject: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+    #     html: '{{ range .Alerts }}{{ .Annotations.description }}<br>{{ end }}'
+    #     send_resolved: true
+    
+    webhook_configs:
+      - url: 'http://localhost:9094/webhook'
+        send_resolved: true
+
+  - name: 'deployment-receiver'
+    # Email for deployment alerts
+    # email_configs:
+    #   - to: 'devops@coffee-pipeline.com'
+    #     subject: 'Deployment Alert: {{ .GroupLabels.alertname }}'
+    #     html: '{{ range .Alerts }}{{ .Annotations.description }}<br>{{ end }}'
+    #     send_resolved: true
+    
+    webhook_configs:
+      - url: 'http://localhost:9094/webhook'
+        send_resolved: true
+
+  - name: 'performance-receiver'
+    # Email for performance alerts
+    # email_configs:
+    #   - to: 'performance@coffee-pipeline.com'
+    #     subject: 'Performance Alert: {{ .GroupLabels.alertname }}'
+    #     html: '{{ range .Alerts }}{{ .Annotations.description }}<br>{{ end }}'
+    #     send_resolved: true
+    
+    webhook_configs:
+      - url: 'http://localhost:9094/webhook'
+        send_resolved: true
+

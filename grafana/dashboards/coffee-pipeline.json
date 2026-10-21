@@ -1,0 +1,206 @@
+{
+  "dashboard": {
+    "title": "Coffee Pipeline - Blue-Green Deployment Dashboard",
+    "tags": ["coffee", "deployment", "blue-green"],
+    "timezone": "browser",
+    "schemaVersion": 27,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Environment",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "blue_green_active_environment",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"0": "Blue", "1": "Green"}},
+              {"type": "range", "options": {"from": 0, "to": 0.5, "result": {"text": "Blue", "color": "blue"}},
+              {"type": "range", "options": {"from": 0.5, "to": 1, "result": {"text": "Green", "color": "green"}}
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "blue"},
+                {"value": 1, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "Request Rate",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 9, "x": 6, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{instance}} - {{method}} {{route}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Requests/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Response Time (95th percentile)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 9, "x": 15, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{instance}} - {{route}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Error Rate",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "rate(http_request_errors_total[5m])",
+            "legendFormat": "{{instance}} - {{status_code}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Errors/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Blue-Green Switch Events",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 9, "x": 6, "y": 4},
+        "targets": [
+          {
+            "expr": "rate(blue_green_switch_total[5m])",
+            "legendFormat": "{{from_env}} → {{to_env}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Switches"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Switch Duration",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 9, "x": 15, "y": 4},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(blue_green_switch_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{from_env}} → {{to_env}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Deployment Duration",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(deployment_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{environment}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Seconds"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Coffee Orders",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "targets": [
+          {
+            "expr": "rate(coffee_orders_total[5m])",
+            "legendFormat": "{{coffee_name}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Orders/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Service Health",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 20},
+        "targets": [
+          {
+            "expr": "up{job=~\"coffee-app-.*\"}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"type": "value", "options": {"0": "Down", "1": "Up"}},
+              {"type": "range", "options": {"from": 0, "to": 0.5, "result": {"text": "Down", "color": "red"}},
+              {"type": "range", "options": {"from": 0.5, "to": 1, "result": {"text": "Up", "color": "green"}}
+            ]
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "Total Orders Value",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 20},
+        "targets": [
+          {
+            "expr": "sum(coffee_order_value_total)",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          }
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    }
+  }
+}
+

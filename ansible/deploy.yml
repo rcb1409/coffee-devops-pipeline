@@ -1,0 +1,528 @@
+---
+# Blue-Green Deployment Playbook with Docker
+
+- name: Setup Load Balancer
+  hosts: loadbalancer
+  become: true
+  gather_facts: true
+  tags: [setup, never]
+  
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+      
+    - name: Ensure Nginx is enabled
+      systemd:
+        name: nginx
+        enabled: yes
+        state: started
+    
+    - name: Create Nginx conf.d directory
+      file:
+        path: /etc/nginx/conf.d
+        state: directory
+        mode: '0755'
+    
+    - name: Configure firewall - Allow port 80
+      shell: |
+        iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+      changed_when: false
+
+- name: Setup App Servers
+  hosts: app_servers
+  become: true
+  gather_facts: true
+  tags: [setup, never]
+  
+  tasks:
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+    
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Install Docker if not present
+      block:
+        - name: Add Docker's official GPG key
+          apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+          when: docker_check.rc != 0
+        
+        - name: Add Docker repository
+          apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+          when: docker_check.rc != 0
+        
+        - name: Install Docker
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+            update_cache: yes
+          when: docker_check.rc != 0
+      when: docker_check.rc != 0
+    
+    - name: Ensure Docker is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      ignore_errors: yes
+    
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      ignore_errors: yes
+    
+    - name: Install Python Docker module
+      apt:
+        name: python3-docker
+        state: present
+
+- name: Determine Current Active Environment
+  hosts: loadbalancer
+  gather_facts: false
+  
+  tasks:
+    - name: Check if active environment file exists
+      stat:
+        path: "{{ active_env_file }}"
+      register: active_file
+    
+    - name: Read current active environment
+      slurp:
+        path: "{{ active_env_file }}"
+      register: current_active_raw
+      when: active_file.stat.exists
+    
+    - name: Set current active environment
+      set_fact:
+        current_active: "{{ (current_active_raw.content | b64decode | trim) if active_file.stat.exists else 'none' }}"
+    
+    - name: Determine target environment
+      set_fact:
+        target_env: "{{ 'green' if current_active == 'blue' else 'blue' }}"
+        standby_env: "{{ 'blue' if current_active == 'blue' else 'green' }}"
+    
+    - name: Store previous environment state for rollback
+      copy:
+        content: "{{ current_active }}"
+        dest: "{{ rollback_state_file }}"
+      become: false
+      when: current_active != 'none'
+      register: rollback_state_saved
+    
+    - name: Display deployment plan
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🚀 Blue-Green Deployment"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Current Active: {{ current_active }}"
+          - "Target Environment: {{ target_env }}"
+          - "Will deploy to: {{ hostvars[target_env]['ansible_host'] }}"
+          - "Rollback state saved: {{ 'Yes' if rollback_state_saved.changed else 'No' }}"
+
+- name: Deploy Application to Target VM
+  hosts: "{{ hostvars['lb']['target_env'] }}"
+  gather_facts: true
+  become: true
+  vars:
+    target_env: "{{ hostvars['lb']['target_env'] }}"
+    container_name: "coffee-{{ environment_name }}"
+  
+  tasks:
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Install Docker if not present
+      block:
+        - name: Add Docker's official GPG key
+          apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+          when: docker_check.rc != 0
+        
+        - name: Add Docker repository
+          apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+          when: docker_check.rc != 0
+        
+        - name: Install Docker
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+            update_cache: yes
+          when: docker_check.rc != 0
+      when: docker_check.rc != 0
+    
+    - name: Ensure Docker service is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      ignore_errors: yes
+    
+    - name: Install Python Docker module if needed
+      apt:
+        name: python3-docker
+        state: present
+      when: docker_check.rc != 0
+    
+    - name: Display target VM info
+      debug:
+        msg:
+          - "📍 Deploying to {{ environment_name | upper }} Environment"
+          - "🖥️  VM: {{ ansible_host }}"
+          - "🔢 Port: {{ app_port }}"
+          - "🐳 Image: {{ docker_image }}:{{ docker_tag }}"
+    
+    - name: Pull latest Docker image
+      docker_image:
+        name: "{{ docker_image }}"
+        tag: "{{ docker_tag }}"
+        source: pull
+      register: image_pull
+    
+    - name: Check if container exists
+      docker_container_info:
+        name: "{{ container_name }}"
+      register: container_info
+    
+    - name: Determine if update needed
+      set_fact:
+        needs_update: "{{ not container_info.exists or (container_info.exists and container_info.container.Image != image_pull.image.Id) }}"
+    
+    - name: Stop and remove existing container
+      docker_container:
+        name: "{{ container_name }}"
+        state: absent
+      when: needs_update and container_info.exists
+    
+    - name: Start new Docker container
+      docker_container:
+        name: "{{ container_name }}"
+        image: "{{ docker_image }}:{{ docker_tag }}"
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ app_port }}:3000"
+        env:
+          PORT: "3000"
+          ENVIRONMENT: "{{ environment_name }}"
+      when: needs_update
+    
+    - name: Wait for container to be ready
+      wait_for:
+        port: "{{ app_port }}"
+        host: localhost
+        delay: 2
+        timeout: 30
+      when: needs_update
+    
+    - name: Health check
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        status_code: 200
+      register: health_check
+      retries: 5
+      delay: 2
+      until: health_check.status == 200
+    
+    - name: Display successful deployment
+      debug:
+        msg:
+          - "✅ {{ environment_name | upper }} deployed!"
+          - "🏥 Health: OK"
+
+- name: Update Load Balancer
+  hosts: loadbalancer
+  gather_facts: false
+  become: true
+  vars:
+    target_env: "{{ hostvars['lb']['target_env'] }}"
+    target_host: "{{ hostvars[target_env]['ansible_host'] }}"
+    target_port: "{{ hostvars[target_env]['app_port'] }}"
+  
+  tasks:
+    - name: Check if Nginx is installed
+      command: nginx -v
+      register: nginx_check
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Install Nginx if not present
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+      when: nginx_check.rc != 0
+    
+    - name: Ensure Nginx conf.d directory exists
+      file:
+        path: /etc/nginx/conf.d
+        state: directory
+        mode: '0755'
+    
+    - name: Ensure port 80 is open in firewall
+      shell: |
+        iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+      changed_when: false
+    - name: Create Nginx upstream configuration
+      copy:
+        dest: /etc/nginx/conf.d/upstream.conf
+        content: |
+          upstream coffee_backend {
+              server {{ target_host }}:{{ target_port }};
+          }
+      register: upstream_config
+    
+    - name: Create Nginx site configuration
+      copy:
+        dest: /etc/nginx/sites-available/coffee-app
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name _;
+
+              add_header X-Active-Environment "{{ target_env }}" always;
+
+              location / {
+                  proxy_pass http://coffee_backend;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              }
+
+              location /health {
+                  proxy_pass http://coffee_backend/health;
+              }
+
+              location /status {
+                  add_header Content-Type text/plain;
+                  return 200 "Active Environment: {{ target_env }}\nBackend: {{ target_host }}:{{ target_port }}\n";
+              }
+          }
+      register: site_config
+    
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+    
+    - name: Enable coffee-app site
+      file:
+        src: /etc/nginx/sites-available/coffee-app
+        dest: /etc/nginx/sites-enabled/coffee-app
+        state: link
+    
+    - name: Stop any running nginx processes
+      shell: pkill nginx || true
+      changed_when: false
+      when: upstream_config.changed or site_config.changed
+    
+    - name: Test Nginx configuration
+      shell: nginx -t
+      changed_when: false
+    
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded
+      when: upstream_config.changed or site_config.changed
+    
+    - name: Ensure Nginx is started
+      systemd:
+        name: nginx
+        state: started
+    
+    - name: Test load balancer
+      uri:
+        url: "http://localhost/health"
+        status_code: 200
+      retries: 3
+      delay: 2
+    
+    - name: Update active environment marker
+      copy:
+        content: "{{ target_env }}"
+        dest: "{{ active_env_file }}"
+      become: false
+    
+    - name: Record Blue-Green switch metric
+      uri:
+        url: "http://{{ target_host }}:{{ target_port }}/metrics"
+        method: GET
+      register: metrics_response
+      failed_when: false
+      changed_when: false
+      delegate_to: localhost
+      when: current_active != 'none'
+      # Note: Actual metric recording happens via push gateway or direct API call
+      # This is a placeholder - in production, you'd push metrics to Prometheus Pushgateway
+    
+    - name: Wait for application to stabilize after switch
+      pause:
+        seconds: 5
+    
+    - name: Post-switch health check via load balancer
+      uri:
+        url: "http://localhost/health"
+        status_code: 200
+        timeout: 10
+      register: post_switch_health
+      retries: 5
+      delay: 3
+      until: post_switch_health.status == 200
+      failed_when: false
+    
+    - name: Post-switch status check
+      uri:
+        url: "http://localhost/status"
+        return_content: yes
+      register: post_switch_status
+      failed_when: false
+    
+    - name: Check if post-switch health check failed
+      set_fact:
+        health_check_failed: "{{ post_switch_health.status != 200 }}"
+    
+    - name: Trigger rollback if health check failed
+      block:
+        - name: Display rollback warning
+          debug:
+            msg:
+              - "⚠️  WARNING: Post-switch health check failed!"
+              - "🔄 Initiating automatic rollback..."
+              - "Health check status: {{ post_switch_health.status | default('Failed') }}"
+        
+        - name: Read rollback state for restoration
+          slurp:
+            path: "{{ rollback_state_file }}"
+          register: rollback_state_raw
+          become: false
+        
+        - name: Set rollback environment
+          set_fact:
+            rollback_env: "{{ (rollback_state_raw.content | b64decode | trim) }}"
+        
+        - name: Display rollback environment info
+          debug:
+            msg:
+              - "Rolling back to: {{ rollback_env | upper }}"
+              - "Rollback VM: {{ hostvars[rollback_env]['ansible_host'] }}"
+              - "Rollback Port: {{ hostvars[rollback_env]['app_port'] }}"
+        
+        - name: Switch Nginx back to rollback environment
+          block:
+            - name: Create Nginx upstream configuration for rollback
+              copy:
+                dest: /etc/nginx/conf.d/upstream.conf
+                content: |
+                  upstream coffee_backend {
+                      server {{ hostvars[rollback_env]['ansible_host'] }}:{{ hostvars[rollback_env]['app_port'] }};
+                  }
+            
+            - name: Create Nginx site configuration for rollback
+              copy:
+                dest: /etc/nginx/sites-available/coffee-app
+                content: |
+                  server {
+                      listen 80 default_server;
+                      listen [::]:80 default_server;
+                      server_name _;
+
+                      add_header X-Active-Environment "{{ rollback_env }}" always;
+
+                      location / {
+                          proxy_pass http://coffee_backend;
+                          proxy_set_header Host $host;
+                          proxy_set_header X-Real-IP $remote_addr;
+                          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      }
+
+                      location /health {
+                          proxy_pass http://coffee_backend/health;
+                      }
+
+                      location /status {
+                          add_header Content-Type text/plain;
+                          return 200 "Active Environment: {{ rollback_env }}\nBackend: {{ hostvars[rollback_env]['ansible_host'] }}:{{ hostvars[rollback_env]['app_port'] }}\n";
+                      }
+                  }
+            
+            - name: Test Nginx configuration
+              shell: nginx -t
+              changed_when: false
+            
+            - name: Reload Nginx
+              systemd:
+                name: nginx
+                state: reloaded
+            
+            - name: Update active environment marker to rollback environment
+              copy:
+                content: "{{ rollback_env }}"
+                dest: "{{ active_env_file }}"
+              become: false
+        
+        - name: Verify rollback via load balancer
+          uri:
+            url: "http://localhost/health"
+            status_code: 200
+          retries: 3
+          delay: 2
+        
+        - name: Display rollback success
+          debug:
+            msg:
+              - ""
+              - "🔄 Rollback Complete!"
+              - "🟢 Active: {{ rollback_env | upper }}"
+              - "✅ System restored to previous state"
+        
+        - name: Fail deployment due to health check failure
+          fail:
+            msg: |
+              Deployment failed health checks after switch.
+              Rollback has been executed automatically.
+              Previous environment ({{ rollback_env }}) has been restored.
+      when: health_check_failed | default(false)
+    
+    - name: Display deployment summary
+      debug:
+        msg:
+          - ""
+          - "✨ Blue-Green Deployment Complete!"
+          - "🟢 Active: {{ target_env | upper }}"
+          - "🏥 Post-switch Health: OK"
+          - "🌐 http://{{ hostvars['lb']['ansible_host'] }}/"
+      when: not (health_check_failed | default(false))

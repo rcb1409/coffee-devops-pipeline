@@ -1,0 +1,251 @@
+---
+# Monitoring Stack Deployment Playbook
+# Deploys Prometheus, Grafana, and Alertmanager for Coffee Pipeline monitoring
+
+- name: Deploy Prometheus
+  hosts: localhost
+  become: false
+  gather_facts: true
+  
+  vars:
+    prometheus_version: "latest"
+    prometheus_port: 9090
+    prometheus_data_dir: "{{ ansible_facts['env']['HOME'] }}/prometheus/data"
+    prometheus_config_dir: "{{ ansible_facts['env']['HOME'] }}/prometheus/config"
+    
+  tasks:
+    - name: Check if Prometheus is already running
+      command: docker ps --filter "name=prometheus" --format "{{ '{{' }}.Names{{ '}}' }}"
+      register: prometheus_check
+      changed_when: false
+      failed_when: false
+    
+    - name: Create Prometheus directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ prometheus_data_dir }}"
+        - "{{ prometheus_config_dir }}"
+    
+    - name: Copy Prometheus configuration
+      copy:
+        src: "{{ playbook_dir }}/../prometheus/prometheus.yml"
+        dest: "{{ prometheus_config_dir }}/prometheus.yml"
+        mode: '0644'
+    
+    - name: Copy Prometheus alert rules
+      copy:
+        src: "{{ playbook_dir }}/../prometheus/alerts.yml"
+        dest: "{{ prometheus_config_dir }}/alerts.yml"
+        mode: '0644'
+    
+    - name: Start Prometheus container
+      docker_container:
+        name: prometheus
+        image: prom/prometheus:{{ prometheus_version }}
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ prometheus_port }}:9090"
+        volumes:
+          - "{{ prometheus_data_dir }}:/prometheus"
+          - "{{ prometheus_config_dir }}/prometheus.yml:/etc/prometheus/prometheus.yml"
+          - "{{ prometheus_config_dir }}/alerts.yml:/etc/prometheus/alerts.yml"
+        command:
+          - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.path=/prometheus'
+          - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+          - '--web.console.templates=/usr/share/prometheus/consoles'
+          - '--web.enable-lifecycle'
+    
+    - name: Wait for Prometheus to be ready
+      uri:
+        url: "http://localhost:{{ prometheus_port }}/-/ready"
+        status_code: 200
+      retries: 10
+      delay: 2
+      register: prometheus_ready
+      until: prometheus_ready.status == 200
+    
+    - name: Display Prometheus status
+      debug:
+        msg:
+          - "✅ Prometheus deployed successfully"
+          - "🌐 Access at: http://localhost:{{ prometheus_port }}"
+          - "📊 Metrics endpoint: http://localhost:{{ prometheus_port }}/metrics"
+
+- name: Deploy Alertmanager
+  hosts: localhost
+  become: false
+  gather_facts: false
+  
+  vars:
+    alertmanager_version: "latest"
+    alertmanager_port: 9093
+    alertmanager_data_dir: "{{ ansible_facts['env']['HOME'] }}/alertmanager/data"
+    alertmanager_config_dir: "{{ ansible_facts['env']['HOME'] }}/alertmanager/config"
+    
+  tasks:
+    - name: Create Alertmanager directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ alertmanager_data_dir }}"
+        - "{{ alertmanager_config_dir }}"
+    
+    - name: Copy Alertmanager configuration
+      copy:
+        src: "{{ playbook_dir }}/../alertmanager/alertmanager.yml"
+        dest: "{{ alertmanager_config_dir }}/alertmanager.yml"
+        mode: '0644'
+    
+    - name: Start Alertmanager container
+      docker_container:
+        name: alertmanager
+        image: prom/alertmanager:{{ alertmanager_version }}
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ alertmanager_port }}:9093"
+        volumes:
+          - "{{ alertmanager_data_dir }}:/alertmanager"
+          - "{{ alertmanager_config_dir }}/alertmanager.yml:/etc/alertmanager/alertmanager.yml"
+        command:
+          - '--config.file=/etc/alertmanager/alertmanager.yml'
+          - '--storage.path=/alertmanager'
+    
+    - name: Wait for Alertmanager to be ready
+      uri:
+        url: "http://localhost:{{ alertmanager_port }}/-/ready"
+        status_code: 200
+      retries: 10
+      delay: 2
+      register: alertmanager_ready
+      until: alertmanager_ready.status == 200
+    
+    - name: Display Alertmanager status
+      debug:
+        msg:
+          - "✅ Alertmanager deployed successfully"
+          - "🌐 Access at: http://localhost:{{ alertmanager_port }}"
+
+- name: Deploy Grafana
+  hosts: localhost
+  become: false
+  gather_facts: false
+  
+  vars:
+    grafana_version: "latest"
+    grafana_port: 3001
+    grafana_data_dir: "{{ ansible_facts['env']['HOME'] }}/grafana/data"
+    grafana_provisioning_dir: "{{ ansible_facts['env']['HOME'] }}/grafana/provisioning"
+    
+  tasks:
+    - name: Create Grafana directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ grafana_data_dir }}"
+        - "{{ grafana_provisioning_dir }}/datasources"
+        - "{{ grafana_provisioning_dir }}/dashboards"
+    
+    - name: Copy Grafana datasource configuration
+      copy:
+        src: "{{ playbook_dir }}/../grafana/provisioning/datasources/prometheus.yml"
+        dest: "{{ grafana_provisioning_dir }}/datasources/prometheus.yml"
+        mode: '0644'
+    
+    - name: Copy Grafana dashboard provisioning configuration
+      copy:
+        src: "{{ playbook_dir }}/../grafana/provisioning/dashboards/dashboards.yml"
+        dest: "{{ grafana_provisioning_dir }}/dashboards/dashboards.yml"
+        mode: '0644'
+    
+    - name: Copy Grafana dashboard
+      copy:
+        src: "{{ playbook_dir }}/../grafana/dashboards/coffee-pipeline.json"
+        dest: "{{ grafana_provisioning_dir }}/dashboards/coffee-pipeline.json"
+        mode: '0644'
+    
+    - name: Start Grafana container
+      docker_container:
+        name: grafana
+        image: grafana/grafana:{{ grafana_version }}
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ grafana_port }}:3000"
+        volumes:
+          - "{{ grafana_data_dir }}:/var/lib/grafana"
+          - "{{ grafana_provisioning_dir }}/datasources:/etc/grafana/provisioning/datasources"
+          - "{{ grafana_provisioning_dir }}/dashboards:/etc/grafana/provisioning/dashboards"
+        env:
+          GF_SECURITY_ADMIN_USER: "admin"
+          GF_SECURITY_ADMIN_PASSWORD: "admin"
+          GF_SERVER_ROOT_URL: "http://localhost:{{ grafana_port }}"
+          GF_INSTALL_PLUGINS: ""
+    
+    - name: Wait for Grafana to be ready
+      uri:
+        url: "http://localhost:{{ grafana_port }}/api/health"
+        status_code: 200
+      retries: 15
+      delay: 3
+      register: grafana_ready
+      until: grafana_ready.status == 200
+    
+    - name: Display Grafana status
+      debug:
+        msg:
+          - "✅ Grafana deployed successfully"
+          - "🌐 Access at: http://localhost:{{ grafana_port }}"
+          - "👤 Default credentials: admin/admin"
+          - "📊 Dashboard: Coffee Pipeline - Blue-Green Deployment Dashboard"
+
+- name: Verify Monitoring Stack
+  hosts: localhost
+  become: false
+  gather_facts: false
+  
+  tasks:
+    - name: Check Prometheus
+      uri:
+        url: "http://localhost:9090/-/healthy"
+        status_code: 200
+      register: prometheus_health
+    
+    - name: Check Alertmanager
+      uri:
+        url: "http://localhost:9093/-/healthy"
+        status_code: 200
+      register: alertmanager_health
+    
+    - name: Check Grafana
+      uri:
+        url: "http://localhost:3001/api/health"
+        status_code: 200
+      register: grafana_health
+    
+    - name: Display monitoring stack summary
+      debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "📊 Monitoring Stack Deployment Complete"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "✅ Prometheus: http://localhost:9090"
+          - "✅ Alertmanager: http://localhost:9093"
+          - "✅ Grafana: http://localhost:3001 (admin/admin)"
+          - ""
+          - "📈 Next Steps:"
+          - "1. Access Grafana and change default password"
+          - "2. Verify Prometheus is scraping metrics from blue/green environments"
+          - "3. Configure alert notification channels in Alertmanager"
+          - "4. Review dashboard: Coffee Pipeline - Blue-Green Deployment Dashboard"
+
